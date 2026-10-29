@@ -47,6 +47,12 @@ textarea{width:100%;height:90px;margin-top:8px;display:none}
 
 <section>
 <h2>2. Cursos e regras</h2>
+<div>
+<button class="sec" id="salvarArq">💾 Salvar regras</button>
+<label for="regrasArq" class="sec" style="display:inline-block;margin:2px 6px 2px 0;padding:6px 10px;border:1px solid var(--bd);border-radius:4px;cursor:pointer">📂 Carregar regras</label>
+<input type="file" id="regrasArq" accept=".json" style="display:none">
+</div>
+<div class="msg" id="m2"></div>
 <label><input type="checkbox" id="todos"> <b>Selecionar todos os cursos</b></label>
 <div id="lista"><span class="msg">Abra uma planilha para listar os cursos.</span></div>
 <div class="msg">Em cada curso há dois recados: um para dia não permitido e outro para horário. Use <b>{dias}</b> e <b>{horarios}</b> dentro do recado se quiser que o robô escreva quais dias ou horários deram problema. As regras ficam salvas neste navegador. Horário igual nos dois lados (00:00 às 00:00) é tratado como erro e não conta.</div>
@@ -84,6 +90,41 @@ function clone(o) { return JSON.parse(JSON.stringify(o)); }
 // ---------- regras salvas ----------
 function lerSalvas() { try { return JSON.parse(localStorage.getItem("regras_horarios_v2") || "{}"); } catch (e) { return {}; } }
 function salvar() { try { localStorage.setItem("regras_horarios_v2", JSON.stringify(regras)); } catch (e) {} }
+regras = lerSalvas();
+
+// ---------- salvar e carregar regras em arquivo ----------
+$("salvarArq").addEventListener("click", function () {
+  var dados = { versao: 2, textos: { ok: $("txtOk").value, sem: $("txtSem").value }, cursos: regras };
+  var blob = new Blob([JSON.stringify(dados, null, 2)], { type: "application/json" });
+  var url = URL.createObjectURL(blob);
+  var a = document.createElement("a");
+  a.href = url; a.download = "regras_horarios.json";
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
+  $("m2").innerHTML = '<span class="ok">Regras salvas em regras_horarios.json (' + Object.keys(regras).length + " cursos).</span>";
+});
+$("regrasArq").addEventListener("change", function (e) {
+  var f = e.target.files[0];
+  if (!f) return;
+  var rd = new FileReader();
+  rd.onload = function (ev) {
+    try {
+      var d = JSON.parse(ev.target.result);
+      if (!d.cursos) throw new Error("o arquivo não tem regras de cursos");
+      Object.keys(d.cursos).forEach(function (c) { regras[c] = Object.assign(clone(DEF), d.cursos[c]); });
+      if (d.textos) { $("txtOk").value = d.textos.ok; $("txtSem").value = d.textos.sem; }
+      salvar();
+      var bate = cursos.filter(function (c) { return d.cursos[c]; }).length;
+      if (cursos.length) { var st = estado(); desenhar(st.sel, st.ab); }
+      $("m2").innerHTML = '<span class="ok">' + Object.keys(d.cursos).length + " cursos carregados do arquivo" +
+        (cursos.length ? " (" + bate + " batem com esta planilha)" : ". Agora abra a planilha") + ".</span>";
+    } catch (err) {
+      $("m2").innerHTML = '<span class="bad">Não consegui ler o arquivo de regras: ' + err.message + "</span>";
+    }
+    $("regrasArq").value = "";
+  };
+  rd.readAsText(f);
+});
 
 // ---------- leitura ----------
 $("arq").addEventListener("change", function (e) {
@@ -126,9 +167,7 @@ function abrir(buf, nome) {
     if (v) contagem[v] = (contagem[v] || 0) + 1;
   }
   cursos = Object.keys(contagem).sort();
-  var salvas = lerSalvas();
-  regras = {};
-  cursos.forEach(function (c) { regras[c] = Object.assign(clone(DEF), salvas[c] || {}); });
+  cursos.forEach(function (c) { regras[c] = Object.assign(clone(DEF), regras[c] || {}); });
   desenhar([], []);
   $("go").disabled = false;
   $("baixar").disabled = true; $("copiar").disabled = true;
