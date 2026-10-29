@@ -1,0 +1,290 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Robô de horários - VAL_11_4</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<style>
+:root{color-scheme:light dark;--bg:#f5f6f4;--fg:#1c2421;--card:#fff;--bd:#cfd5d1;--ac:#0f6b57;--ok:#17803d;--bad:#b3261e;--warn:#9a6700}
+@media (prefers-color-scheme:dark){:root{--bg:#161b19;--fg:#e8ece9;--card:#202724;--bd:#37413c;--ac:#4fc3a6;--ok:#5cc489;--bad:#ff8a80;--warn:#e3b341}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.5 Georgia,"Times New Roman",serif}
+main{max-width:920px;margin:0 auto;padding:20px 16px 60px}
+h1{font-size:1.5rem;margin:0 0 4px}
+h2{font-size:1.1rem;margin:0 0 10px}
+p.s{margin:0 0 18px;opacity:.8}
+section{background:var(--card);border:1px solid var(--bd);border-radius:6px;padding:14px 16px;margin-bottom:14px}
+label{display:inline-block;margin:4px 14px 4px 0}
+input,button,textarea{font:inherit;color:inherit;background:var(--bg);border:1px solid var(--bd);border-radius:4px;padding:6px 10px}
+input[type=checkbox]{padding:0}
+input.w{width:100%}
+button{background:var(--ac);color:#fff;border-color:var(--ac);cursor:pointer;margin:2px 6px 2px 0}
+button:disabled{opacity:.4;cursor:not-allowed}
+button.sec{background:var(--card);color:var(--fg);border-color:var(--bd)}
+.msg{margin:8px 0 0;font-size:.95rem}
+.box{overflow-x:auto}
+table{border-collapse:collapse;width:100%;font-size:.92rem}
+th,td{border-bottom:1px solid var(--bd);padding:5px 8px;text-align:left;vertical-align:top}
+.ok{color:var(--ok)}.bad{color:var(--bad)}.warn{color:var(--warn)}
+details{border:1px solid var(--bd);border-radius:5px;margin:6px 0;padding:6px 10px}
+summary{cursor:pointer}
+.rg{padding:8px 0 4px}
+.cnt{opacity:.7;font-size:.9rem}
+textarea{width:100%;height:90px;margin-top:8px;display:none}
+</style>
+</head>
+<body>
+<main>
+<h1>Robô de horários (VAL_11_4)</h1>
+<p class="s">Escolha os cursos, adapte as regras e os recados de cada um, e o robô preenche só a VAL_11_4. Linhas que já têm algo na VAL_11_4 são ignoradas.</p>
+
+<section>
+<h2>1. Planilha</h2>
+<input type="file" id="arq" accept=".xlsx,.xlsm,.xls">
+<div class="msg" id="m1"></div>
+</section>
+
+<section>
+<h2>2. Cursos e regras</h2>
+<label><input type="checkbox" id="todos"> <b>Selecionar todos os cursos</b></label>
+<div id="lista"><span class="msg">Abra uma planilha para listar os cursos.</span></div>
+<div class="msg">Em cada curso há dois recados: um para dia não permitido e outro para horário. Use <b>{dias}</b> e <b>{horarios}</b> dentro do recado se quiser que o robô escreva quais dias ou horários deram problema. As regras ficam salvas neste navegador. Horário igual nos dois lados (00:00 às 00:00) é tratado como erro e não conta.</div>
+<p></p>
+<label>Texto quando está tudo certo <input id="txtOk" value="OK" style="width:150px"></label>
+<label>Texto quando não tem horário <input id="txtSem" value="SEM HORÁRIO" style="width:200px"></label>
+</section>
+
+<section>
+<h2>3. Analisar</h2>
+<button id="go" disabled>Analisar cursos selecionados</button>
+<button id="baixar" class="sec" disabled>Baixar planilha preenchida</button>
+<button id="copiar" class="sec" disabled>Copiar só a coluna VAL_11_4</button>
+<div class="msg" id="m3"></div>
+<textarea id="paste" readonly></textarea>
+<div class="box"><table id="tab"></table></div>
+</section>
+</main>
+
+<script>
+var $ = function (id) { return document.getElementById(id); };
+var DIAS = ["DOMINGO", "SEGUNDA", "TERCA", "QUARTA", "QUINTA", "SEXTA", "SABADO"];
+var NOMES = ["domingo", "segunda", "terça", "quarta", "quinta", "sexta", "sábado"];
+var ABREV = ["Dom", "Seg", "Ter", "Qua", "Qui", "Sex", "Sáb"];
+var DEF = { dias: [false, true, true, true, true, true, false], ini: "00:00", fim: "23:59", maxd: "",
+  msgDia: "Estágio não pode ser realizado em: {dias}", msgHor: "Horário fora do permitido: {horarios}" };
+var wb, ws, rows, hr, hdr, cols, cCurso, cVal, cCod, resultados = {}, cursos = [], contagem = {}, regras = {};
+
+function norm(s) { return String(s == null ? "" : s).normalize("NFD").replace(/[\u0300-\u036f]/g, "").toUpperCase().trim(); }
+function esc(s) { return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/"/g, "&quot;"); }
+function fmt(min) { var h = Math.floor(min / 60), m = min % 60; return (h < 10 ? "0" : "") + h + ":" + (m < 10 ? "0" : "") + m; }
+function toMin(t) { var p = (t || "00:00").split(":"); return (+p[0]) * 60 + (+p[1]); }
+function clone(o) { return JSON.parse(JSON.stringify(o)); }
+
+// ---------- regras salvas ----------
+function lerSalvas() { try { return JSON.parse(localStorage.getItem("regras_horarios_v2") || "{}"); } catch (e) { return {}; } }
+function salvar() { try { localStorage.setItem("regras_horarios_v2", JSON.stringify(regras)); } catch (e) {} }
+
+// ---------- leitura ----------
+$("arq").addEventListener("change", function (e) {
+  var f = e.target.files[0];
+  if (!f) return;
+  var rd = new FileReader();
+  rd.onload = function (ev) {
+    try { abrir(ev.target.result, f.name); } catch (err) { $("m1").innerHTML = '<span class="bad">Não consegui ler: ' + err.message + "</span>"; }
+  };
+  rd.readAsArrayBuffer(f);
+});
+
+function abrir(buf, nome) {
+  wb = XLSX.read(buf, { type: "array" });
+  ws = wb.Sheets[wb.SheetNames[0]];
+  rows = XLSX.utils.sheet_to_json(ws, { header: 1, defval: "", raw: false, blankrows: true });
+  hr = -1;
+  for (var i = 0; i < Math.min(rows.length, 15); i++) {
+    if (rows[i].map(norm).indexOf("MATUTINO") >= 0) { hr = i; break; }
+  }
+  if (hr < 0) throw new Error("não achei a coluna MATUTINO no cabeçalho");
+  hdr = rows[hr].map(norm);
+  cCurso = hdr.indexOf("CURSO");
+  if (cCurso < 0) throw new Error("não achei a coluna CURSO");
+  cVal = hdr.indexOf("VAL_11_4");
+  cCod = hdr.indexOf("CODIGO_ESTAGIO");
+  var ini = ["MATUTINO", "VESPERTINO", "NOTURNO"].map(function (n) { return hdr.indexOf(n); });
+  if (ini.indexOf(-1) >= 0) throw new Error("faltam blocos MATUTINO, VESPERTINO ou NOTURNO");
+  cols = DIAS.map(function () { return []; });
+  ini.forEach(function (s) {
+    for (var c = s + 1; c < hdr.length; c++) {
+      if (ini.indexOf(c) >= 0) break;
+      var k = DIAS.indexOf(hdr[c]);
+      if (k >= 0) cols[k].push(c);
+    }
+  });
+  contagem = {};
+  for (var r = hr + 1; r < rows.length; r++) {
+    var v = String(rows[r][cCurso] || "").trim();
+    if (v) contagem[v] = (contagem[v] || 0) + 1;
+  }
+  cursos = Object.keys(contagem).sort();
+  var salvas = lerSalvas();
+  regras = {};
+  cursos.forEach(function (c) { regras[c] = Object.assign(clone(DEF), salvas[c] || {}); });
+  desenhar([], []);
+  $("go").disabled = false;
+  $("baixar").disabled = true; $("copiar").disabled = true;
+  $("tab").innerHTML = ""; $("m3").textContent = ""; $("paste").style.display = "none";
+  $("m1").innerHTML = '<span class="ok">' + esc(nome) + ": " + (rows.length - hr - 1) + " linhas, " + cursos.length + " cursos.</span>" +
+    (cVal < 0 ? " A coluna VAL_11_4 não existe e será criada no final." : "");
+}
+
+// ---------- lista de cursos ----------
+function desenhar(sel, abertos) {
+  $("lista").innerHTML = cursos.map(function (c, i) {
+    var g = regras[c];
+    var dias = ABREV.map(function (a, d) {
+      return '<label><input type="checkbox" class="dia" data-i="' + i + '" data-d="' + d + '"' + (g.dias[d] ? " checked" : "") + "> " + a + "</label>";
+    }).join("");
+    return '<details' + (abertos.indexOf(i) >= 0 ? " open" : "") + ' data-i="' + i + '"><summary><label><input type="checkbox" class="sel" data-i="' + i + '"' +
+      (sel.indexOf(i) >= 0 ? " checked" : "") + "> <b>" + esc(c) + '</b></label> <span class="cnt">' + contagem[c] + ' linhas</span></summary><div class="rg">' +
+      "<div>Dias permitidos: " + dias + "</div>" +
+      '<div><label>Horário de <input type="time" class="f" data-i="' + i + '" data-k="ini" value="' + g.ini + '"></label>' +
+      '<label>até <input type="time" class="f" data-i="' + i + '" data-k="fim" value="' + g.fim + '"></label>' +
+      '<label>Máx. horas por dia <input type="number" class="f" data-i="' + i + '" data-k="maxd" min="0" step="0.5" placeholder="sem limite" style="width:110px" value="' + esc(g.maxd) + '"></label></div>' +
+      '<div>Recado de dia não permitido<br><input class="w f" data-i="' + i + '" data-k="msgDia" value="' + esc(g.msgDia) + '"></div>' +
+      '<div>Recado de horário<br><input class="w f" data-i="' + i + '" data-k="msgHor" value="' + esc(g.msgHor) + '"></div>' +
+      '<div style="margin-top:8px"><button class="sec cp" data-i="' + i + '">Copiar estas regras e recados para os cursos selecionados</button></div>' +
+      "</div></details>";
+  }).join("");
+  $("todos").checked = sel.length === cursos.length && cursos.length > 0;
+}
+function estado() {
+  var sel = [], ab = [];
+  document.querySelectorAll(".sel").forEach(function (x) { if (x.checked) sel.push(+x.dataset.i); });
+  document.querySelectorAll("#lista details").forEach(function (x) { if (x.open) ab.push(+x.dataset.i); });
+  return { sel: sel, ab: ab };
+}
+$("todos").addEventListener("change", function () {
+  var on = $("todos").checked;
+  document.querySelectorAll(".sel").forEach(function (x) { x.checked = on; });
+});
+$("lista").addEventListener("click", function (e) {
+  if (e.target.classList.contains("sel")) e.stopPropagation();
+  if (e.target.classList.contains("cp")) {
+    var st = estado(), de = regras[cursos[+e.target.dataset.i]];
+    st.sel.forEach(function (j) {
+      var g = regras[cursos[j]];
+      ["dias", "ini", "fim", "maxd", "msgDia", "msgHor"].forEach(function (k) { g[k] = clone(de[k]); });
+    });
+    salvar(); desenhar(st.sel, st.ab);
+    $("m3").innerHTML = '<span class="ok">Regras copiadas para ' + st.sel.length + " curso(s).</span>";
+  }
+});
+$("lista").addEventListener("change", function (e) {
+  var t = e.target;
+  if (t.classList.contains("sel")) {
+    $("todos").checked = estado().sel.length === cursos.length;
+  } else if (t.classList.contains("dia")) {
+    regras[cursos[+t.dataset.i]].dias[+t.dataset.d] = t.checked; salvar();
+  }
+});
+$("lista").addEventListener("input", function (e) {
+  var t = e.target;
+  if (t.classList.contains("f")) { regras[cursos[+t.dataset.i]][t.dataset.k] = t.value; salvar(); }
+});
+
+// ---------- horários ----------
+function lerIntervalos(txt) {
+  var out = [], re = /(\d{1,2})[:h](\d{2})\s*(?:as|às|a|ate|até|-|–)\s*(\d{1,2})[:h](\d{2})/gi, x;
+  txt = String(txt == null ? "" : txt);
+  while ((x = re.exec(txt))) {
+    var a = (+x[1]) * 60 + (+x[2]), b = (+x[3]) * 60 + (+x[4]);
+    if (a === b) continue;               // 00:00 às 00:00 = erro, não conta
+    if (b < a) b = 1439;                 // passou da meia-noite: conta até 23:59
+    out.push([a, b]);
+  }
+  return out;
+}
+function unir(iv) {
+  iv.sort(function (p, q) { return p[0] - q[0]; });
+  var m = [];
+  iv.forEach(function (p) {
+    if (m.length && p[0] <= m[m.length - 1][1]) m[m.length - 1][1] = Math.max(m[m.length - 1][1], p[1]);
+    else m.push([p[0], p[1]]);
+  });
+  return m;
+}
+function analisar(r, g) {
+  var diasRuins = [], horRuins = [], tem = false, ini = toMin(g.ini), fim = toMin(g.fim);
+  var maxMin = String(g.maxd) === "" ? null : parseFloat(g.maxd) * 60;
+  DIAS.forEach(function (d, i) {
+    var iv = [];
+    cols[i].forEach(function (c) { iv = iv.concat(lerIntervalos(r[c])); });
+    iv = unir(iv);
+    if (!iv.length) return;
+    tem = true;
+    if (!g.dias[i]) { diasRuins.push(NOMES[i]); return; }
+    var tot = 0;
+    iv.forEach(function (p) {
+      tot += p[1] - p[0];
+      if (p[0] < ini || p[1] > fim) horRuins.push(NOMES[i] + " " + fmt(p[0]) + " às " + fmt(p[1]));
+    });
+    if (maxMin !== null && tot > maxMin) horRuins.push(NOMES[i] + " com " + (tot / 60).toFixed(1) + "h");
+  });
+  if (!tem) return { txt: $("txtSem").value, tipo: "warn" };
+  var partes = [];
+  if (diasRuins.length) partes.push(g.msgDia.replace(/\{dias\}/g, diasRuins.join(", ")));
+  if (horRuins.length) partes.push(g.msgHor.replace(/\{horarios\}/g, horRuins.join("; ")));
+  if (!partes.length) return { txt: $("txtOk").value, tipo: "ok" };
+  return { txt: partes.join(" | "), tipo: "bad" };
+}
+
+$("go").addEventListener("click", function () {
+  var sel = estado().sel.map(function (i) { return cursos[i]; });
+  if (!sel.length) { $("m3").innerHTML = '<span class="bad">Marque pelo menos um curso.</span>'; return; }
+  resultados = {};
+  var n = 0, ja = 0, fora = 0, cont = { ok: 0, bad: 0, warn: 0 };
+  var html = "<tr><th>Linha</th><th>Código</th><th>Curso</th><th>Resultado</th></tr>";
+  for (var r = hr + 1; r < rows.length; r++) {
+    var linha = rows[r];
+    if (!linha.join("").trim()) continue;
+    var c = String(linha[cCurso] || "").trim();
+    if (sel.indexOf(c) < 0) { fora++; continue; }
+    if (cVal >= 0 && String(linha[cVal] || "").trim() !== "") { ja++; continue; }
+    var res = analisar(linha, regras[c]);
+    resultados[r] = res.txt; n++; cont[res.tipo]++;
+    html += "<tr><td>" + (r + 1) + "</td><td>" + esc(cCod >= 0 ? linha[cCod] : "") + "</td><td>" + esc(c) + '</td><td class="' + res.tipo + '">' + esc(res.txt) + "</td></tr>";
+  }
+  $("tab").innerHTML = html;
+  $("m3").innerHTML = n + " analisadas (" + cont.ok + " ok, " + cont.bad + " com recado, " + cont.warn + " sem horário). " +
+    ja + " ignoradas por já terem VAL_11_4. " + fora + " de cursos não selecionados, sem mexer.";
+  $("baixar").disabled = n === 0; $("copiar").disabled = n === 0;
+});
+
+// ---------- saída: só a coluna VAL_11_4 ----------
+$("baixar").addEventListener("click", function () {
+  var rg = XLSX.utils.decode_range(ws["!ref"]);
+  var col = cVal >= 0 ? cVal : Math.max.apply(null, rows.map(function (x) { return x.length; }));
+  var cc = col + rg.s.c;
+  if (cc > rg.e.c) { rg.e.c = cc; ws["!ref"] = XLSX.utils.encode_range(rg); }
+  if (cVal < 0) ws[XLSX.utils.encode_cell({ r: hr + rg.s.r, c: cc })] = { t: "s", v: "VAL_11_4" };
+  Object.keys(resultados).forEach(function (r) {
+    ws[XLSX.utils.encode_cell({ r: +r + rg.s.r, c: cc })] = { t: "s", v: resultados[r] };
+  });
+  XLSX.writeFile(wb, "horarios_analisados.xlsx");
+});
+$("copiar").addEventListener("click", function () {
+  var linhas = [];
+  for (var r = hr + 1; r < rows.length; r++) {
+    var v = resultados[r] != null ? resultados[r] : (cVal >= 0 ? rows[r][cVal] : "");
+    linhas.push(String(v == null ? "" : v).replace(/[\t\r\n]+/g, " "));
+  }
+  var ta = $("paste");
+  ta.value = linhas.join("\n"); ta.style.display = "block"; ta.select();
+  var ok = false;
+  try { ok = document.execCommand("copy"); } catch (e) {}
+  $("m3").innerHTML = ok ? '<span class="ok">Coluna copiada. Cole na primeira linha de dados da coluna VAL_11_4.</span>'
+    : "Selecione o texto da caixa, copie (Ctrl+C) e cole na primeira linha de dados da coluna VAL_11_4.";
+});
+</script>
+</body>
+</html>
